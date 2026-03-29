@@ -11,8 +11,9 @@ router.use(authMiddleware)
 
 // POST /submit → create expense, auto-create first approval step if employee has manager with isManagerApprover=true
 router.post('/submit', async (req, res) => {
-  const { amount, currency, category, description, date } = req.body
+  const { amount, currency, category, description, date, convertedAmount } = req.body
   const numericAmount = parseFloat(amount)
+  const numericConverted = convertedAmount ? parseFloat(convertedAmount) : null
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user.userId },
@@ -26,6 +27,7 @@ router.post('/submit', async (req, res) => {
         companyId: req.user.companyId,
         amount: numericAmount,
         currency,
+        convertedAmount: numericConverted,
         category,
         description,
         date: new Date(date || Date.now())

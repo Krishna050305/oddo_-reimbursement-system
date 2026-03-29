@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import api from '../api/axios';
-import { LogOut, PlusCircle, Receipt, RefreshCcw, WalletCards } from 'lucide-react';
+import Tesseract from 'tesseract.js';
+import { LogOut, PlusCircle, Receipt, RefreshCcw, WalletCards, Camera, X, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
 
 const EmployeeDashboard = () => {
   const { user, logout } = useAuth();
@@ -10,6 +11,8 @@ const EmployeeDashboard = () => {
   const [submitLoading, setSubmitLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  const companyCurrency = user?.company?.currency || 'INR';
+
   const [formData, setFormData] = useState({
     amount: '',
     currency: 'USD',
@@ -17,6 +20,20 @@ const EmployeeDashboard = () => {
     description: '',
     date: new Date().toISOString().split('T')[0]
   });
+
+  // --- OCR State ---
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState(0);
+  const [ocrStatus, setOcrStatus] = useState('');
+  const [ocrBanner, setOcrBanner] = useState(null); // { type: 'success' | 'warning', message }
+  const [receiptPreview, setReceiptPreview] = useState(null);
+  const fileInputRef = useRef(null);
+
+  // --- Currency Conversion State ---
+  const [convertedAmount, setConvertedAmount] = useState(null);
+  const [conversionRate, setConversionRate] = useState(null);
+  const [conversionLoading, setConversionLoading] = useState(false);
+  const debounceTimerRef = useRef(null);
 
   const fetchExpenses = async () => {
     setLoading(true);
@@ -34,6 +51,53 @@ const EmployeeDashboard = () => {
     fetchExpenses();
   }, []);
 
+  // --- Currency Conversion Logic ---
+  const fetchConversion = useCallback(async (amount, currency) => {
+    if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
+      setConvertedAmount(null);
+      setConversionRate(null);
+      return;
+    }
+    if (currency === companyCurrency) {
+      setConvertedAmount(null);
+      setConversionRate(null);
+      return;
+    }
+
+    setConversionLoading(true);
+    try {
+      const res = await api.get(`/currency/convert?from=${currency}&to=${companyCurrency}&amount=${amount}`);
+      setConvertedAmount(res.data.convertedAmount);
+      setConversionRate(res.data.rate);
+    } catch (err) {
+      console.error('Conversion error:', err);
+      // fallback: treat as 1:1
+      setConvertedAmount(parseFloat(amount));
+      setConversionRate(1);
+    } finally {
+      setConversionLoading(false);
+    }
+  }, [companyCurrency]);
+
+  // Debounced conversion trigger
+  useEffect(() => {
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+
+    if (formData.currency === companyCurrency) {
+      setConvertedAmount(null);
+      setConversionRate(null);
+      return;
+    }
+
+    debounceTimerRef.current = setTimeout(() => {
+      fetchConversion(formData.amount, formData.currency);
+    }, 500);
+
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, [formData.amount, formData.currency, fetchConversion, companyCurrency]);
+
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
@@ -43,14 +107,138 @@ const EmployeeDashboard = () => {
     setSubmitLoading(true);
     setError(null);
     try {
-      await api.post('/expenses/submit', formData);
+      const submitData = { ...formData };
+      // Include convertedAmount if currency differs from company currency
+      if (formData.currency !== companyCurrency && convertedAmount) {
+        submitData.convertedAmount = convertedAmount;
+      }
+      await api.post('/expenses/submit', submitData);
       setFormData({ ...formData, amount: '', description: '', date: new Date().toISOString().split('T')[0] });
-      fetchExpenses(); // Refresh the list
+      setConvertedAmount(null);
+      setConversionRate(null);
+      setReceiptPreview(null);
+      setOcrBanner(null);
+      fetchExpenses();
     } catch (err) {
       setError('Failed to submit expense. Try again.');
     } finally {
       setSubmitLoading(false);
     }
+  };
+
+  // --- OCR Logic ---
+  const categorizeFromText = (text) => {
+    const lower = text.toLowerCase();
+    if (/hotel|inn|lodge|resort|stay/i.test(lower)) return 'Accommodation';
+    if (/cab|uber|ola|flight|taxi|train|bus|metro|airline|airways/i.test(lower)) return 'Travel';
+    if (/restaurant|cafe|food|lunch|dinner|breakfast|swiggy|zomato|coffee|bistro/i.test(lower)) return 'Food';
+    if (/office|stationery|supplies|printer|paper/i.test(lower)) return 'Office Supplies';
+    return 'Other';
+  };
+
+  const handleScanReceipt = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Show preview
+    setReceiptPreview(URL.createObjectURL(file));
+    setOcrLoading(true);
+    setOcrProgress(0);
+    setOcrStatus('Initializing OCR engine...');
+    setOcrBanner(null);
+
+    try {
+      const result = await Tesseract.recognize(file, 'eng', {
+        logger: (m) => {
+          if (m.status) setOcrStatus(m.status);
+          if (typeof m.progress === 'number') setOcrProgress(m.progress);
+        }
+      });
+
+      const text = result.data.text;
+      let fieldsFound = 0;
+
+      // Parse amount — prioritize "Grand Total" over "Subtotal"
+      // Tesseract often misreads ₹ as a digit (e.g., "3"), so we use a flexible pattern
+      // that captures the number after the keyword, skipping any non-digit garbage between keyword and amount
+      let parsedAmount = null;
+
+      // Try patterns in priority order: grand total first, then total, then subtotal/amount
+      const amountPatterns = [
+        /grand\s*total[:\s]*[^0-9]*(\d[\d,]*\.\d{2})/i,
+        /(?:^|\n)[^\n]*\btotal\b(?!\s*\()[:\s]*[^0-9]*(\d[\d,]*\.\d{2})/i,
+        /(?:net|balance|due|amount)[:\s]*[^0-9]*(\d[\d,]*\.\d{2})/i,
+        /(?:sub\s*total|subtotal)[:\s]*[^0-9]*(\d[\d,]*\.\d{2})/i,
+      ];
+
+      for (const pattern of amountPatterns) {
+        const match = text.match(pattern);
+        if (match) {
+          parsedAmount = match[1].replace(/,/g, '');
+          break;
+        }
+      }
+
+      if (parsedAmount) {
+        setFormData(prev => ({ ...prev, amount: parsedAmount }));
+        fieldsFound++;
+      }
+
+      // Parse date
+      const dateMatch = text.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+      if (dateMatch) {
+        const parts = dateMatch[1].split(/[\/\-]/);
+        let isoDate = '';
+        if (parts[2]?.length === 4) {
+          // DD/MM/YYYY or MM/DD/YYYY — assume DD/MM/YYYY
+          isoDate = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+        } else if (parts[2]?.length === 2) {
+          isoDate = `20${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+        }
+        if (isoDate && !isNaN(new Date(isoDate).getTime())) {
+          setFormData(prev => ({ ...prev, date: isoDate }));
+          fieldsFound++;
+        }
+      }
+
+      // Parse description (first meaningful line)
+      const lines = text.split('\n').filter(l => l.trim().length > 2);
+      const description = lines[0]?.trim() || '';
+      if (description) {
+        setFormData(prev => ({ ...prev, description }));
+        fieldsFound++;
+      }
+
+      // Parse category
+      const category = categorizeFromText(text);
+      setFormData(prev => ({ ...prev, category }));
+      if (category !== 'Other') fieldsFound++;
+
+      if (fieldsFound >= 2) {
+        setOcrBanner({ type: 'success', message: 'Receipt scanned! Please verify the details before submitting.' });
+      } else if (fieldsFound >= 1) {
+        setOcrBanner({ type: 'warning', message: 'Partially read. Some fields may need manual entry.' });
+      } else {
+        setOcrBanner({ type: 'warning', message: 'Could not read receipt clearly. Please fill in manually.' });
+      }
+    } catch (err) {
+      console.error('OCR failed:', err);
+      setOcrBanner({ type: 'warning', message: 'Could not read receipt clearly. Please fill in manually.' });
+    } finally {
+      setOcrLoading(false);
+      setOcrProgress(0);
+      // Reset file input so the same file can be selected again
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const clearReceiptPreview = () => {
+    setReceiptPreview(null);
+    setOcrBanner(null);
   };
 
   return (
@@ -89,9 +277,72 @@ const EmployeeDashboard = () => {
                <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
                   <Receipt size={120} />
                </div>
-              <h2 className="text-lg font-bold text-slate-900 mb-6 flex items-center gap-2">
+
+              {/* OCR Progress Overlay */}
+              {ocrLoading && (
+                <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-20 flex flex-col items-center justify-center rounded-2xl">
+                  <Loader2 className="animate-spin text-brand-600 mb-4" size={40} />
+                  <p className="text-sm font-medium text-slate-700 mb-3">{ocrStatus || 'Reading your receipt...'}</p>
+                  <div className="w-48 h-2 bg-slate-200 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-brand-500 rounded-full transition-all duration-300"
+                      style={{ width: `${Math.round(ocrProgress * 100)}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-slate-400 mt-2">{Math.round(ocrProgress * 100)}%</p>
+                </div>
+              )}
+
+              <h2 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
                 <PlusCircle size={20} className="text-brand-500" /> New Expense
               </h2>
+
+              {/* Scan Receipt Button */}
+              <button
+                type="button"
+                onClick={handleScanReceipt}
+                disabled={ocrLoading}
+                className="w-full mb-4 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl border-2 border-dashed border-brand-300 bg-brand-50/50 text-brand-700 font-medium text-sm hover:bg-brand-100/60 hover:border-brand-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Camera size={18} />
+                📷 Scan Receipt
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleFileSelect}
+              />
+
+              {/* OCR Banner */}
+              {ocrBanner && (
+                <div className={`mb-4 p-3 rounded-xl text-sm font-medium flex items-start gap-2 ${
+                  ocrBanner.type === 'success'
+                    ? 'bg-green-50 text-green-800 border border-green-200'
+                    : 'bg-yellow-50 text-yellow-800 border border-yellow-200'
+                }`}>
+                  {ocrBanner.type === 'success' ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : <AlertTriangle size={16} className="mt-0.5 shrink-0" />}
+                  <span>{ocrBanner.message}</span>
+                </div>
+              )}
+
+              {/* Receipt Thumbnail */}
+              {receiptPreview && (
+                <div className="mb-4 relative group">
+                  <img
+                    src={receiptPreview}
+                    alt="Receipt preview"
+                    className="w-full h-32 object-cover rounded-xl border border-slate-200 shadow-sm"
+                  />
+                  <button
+                    onClick={clearReceiptPreview}
+                    className="absolute top-2 right-2 bg-white/90 hover:bg-white rounded-full p-1 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <X size={14} className="text-slate-600" />
+                  </button>
+                </div>
+              )}
 
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
@@ -106,6 +357,21 @@ const EmployeeDashboard = () => {
                     </select>
                     <input type="number" step="0.01" name="amount" value={formData.amount} onChange={handleChange} className="form-input flex-1" placeholder="0.00" required />
                   </div>
+                  {/* Currency Conversion Display */}
+                  {formData.currency !== companyCurrency && formData.amount && (
+                    <div className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-500">
+                      {conversionLoading ? (
+                        <>
+                          <Loader2 className="animate-spin" size={12} />
+                          <span>Converting...</span>
+                        </>
+                      ) : convertedAmount !== null ? (
+                        <span>≈ {convertedAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {companyCurrency}
+                          {conversionRate && <span className="text-slate-400 ml-1">(rate: {conversionRate.toFixed(4)})</span>}
+                        </span>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -130,6 +396,31 @@ const EmployeeDashboard = () => {
                 </div>
 
                 {error && <div className="text-sm text-red-600 bg-red-50 p-2 rounded-lg">{error}</div>}
+
+                {/* Grand Total Summary */}
+                {formData.amount && (
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mt-2">
+                    <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Expense Summary</div>
+                    <div className="flex justify-between items-baseline">
+                      <span className="text-sm text-slate-600">Amount</span>
+                      <span className="text-lg font-bold text-slate-900">
+                        {parseFloat(formData.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {formData.currency}
+                      </span>
+                    </div>
+                    {formData.currency !== companyCurrency && convertedAmount !== null && (
+                      <div className="flex justify-between items-baseline mt-1 pt-1 border-t border-slate-200">
+                        <span className="text-sm text-slate-600">In {companyCurrency}</span>
+                        <span className="text-lg font-black text-brand-600">
+                          ≈ {convertedAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {companyCurrency}
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex justify-between items-baseline mt-1 text-xs text-slate-400">
+                      <span>{formData.category}</span>
+                      <span>{formData.date}</span>
+                    </div>
+                  </div>
+                )}
 
                 <button type="submit" disabled={submitLoading} className="primary-btn w-full mt-2">
                   {submitLoading ? <RefreshCcw className="animate-spin" size={20} /> : 'Submit for Approval'}
@@ -187,8 +478,15 @@ const EmployeeDashboard = () => {
                           <td className="px-6 py-4 text-sm text-slate-500 max-w-xs truncate" title={exp.description}>
                             {exp.description}
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-slate-900 text-right">
-                            {exp.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {exp.currency}
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-right">
+                            <span className="font-bold text-slate-900">
+                              {exp.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {exp.currency}
+                            </span>
+                            {exp.convertedAmount && exp.currency !== companyCurrency && (
+                              <span className="block text-xs text-slate-400 mt-0.5">
+                                ≈ {exp.convertedAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {companyCurrency}
+                              </span>
+                            )}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-center">
                             <span className={`badge badge-${exp.status}`}>

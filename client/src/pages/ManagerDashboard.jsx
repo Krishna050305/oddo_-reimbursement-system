@@ -5,6 +5,7 @@ import { LogOut, CheckCircle, XCircle, Clock, WalletCards, RefreshCcw, User } fr
 
 const ManagerDashboard = () => {
   const { user, logout } = useAuth();
+  const companyCurrency = user?.company?.currency || 'INR';
   const [pending, setPending] = useState([]);
   const [decisions, setDecisions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -118,10 +119,19 @@ const ManagerDashboard = () => {
                         <h3 className="text-lg font-bold text-slate-900 mt-1">{step.expense.employee.name}</h3>
                       </div>
                       <div className="text-right">
-                         <span className="text-xl font-black text-brand-600 block">
+                         {step.expense.convertedAmount && step.expense.currency !== companyCurrency ? (
+                           <>
+                             <span className="text-xl font-black text-brand-600 block">
+                               {step.expense.convertedAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} {companyCurrency}
+                             </span>
+                             <span className="text-xs text-slate-400">(from {step.expense.amount.toLocaleString()} {step.expense.currency})</span>
+                           </>
+                         ) : (
+                           <span className="text-xl font-black text-brand-600 block">
                             {step.expense.amount.toLocaleString()} {step.expense.currency}
-                         </span>
-                         <span className="text-xs text-slate-400">{new Date(step.expense.date).toLocaleDateString()}</span>
+                           </span>
+                         )}
+                         <span className="text-xs text-slate-400 block">{new Date(step.expense.date).toLocaleDateString()}</span>
                       </div>
                     </div>
                     
@@ -186,7 +196,14 @@ const ManagerDashboard = () => {
                           {step.expense.employee.name}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-700">
-                          {step.expense.amount.toLocaleString()} {step.expense.currency}
+                          {step.expense.convertedAmount && step.expense.currency !== companyCurrency ? (
+                            <>
+                              <span>{step.expense.convertedAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} {companyCurrency}</span>
+                              <span className="block text-xs text-slate-400">(from {step.expense.amount.toLocaleString()} {step.expense.currency})</span>
+                            </>
+                          ) : (
+                            <span>{step.expense.amount.toLocaleString()} {step.expense.currency}</span>
+                          )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                            <span className={`badge badge-${step.decision}`}>
