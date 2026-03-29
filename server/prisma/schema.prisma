@@ -1,0 +1,75 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Company {
+  id        String   @id @default(uuid())
+  name      String
+  currency  String
+  country   String
+  createdAt DateTime @default(now())
+  users     User[]
+  expenses  Expense[]
+  rules     ApprovalRule[]
+}
+
+model User {
+  id                String   @id @default(uuid())
+  companyId         String
+  company           Company  @relation(fields: [companyId], references: [id])
+  name              String
+  email             String   @unique
+  password          String
+  role              String   // admin, manager, employee
+  isManagerApprover Boolean  @default(false)
+  managerId         String?
+  manager           User?    @relation("UserManager", fields: [managerId], references: [id])
+  subordinates      User[]   @relation("UserManager")
+  expenses          Expense[]
+  steps             ApprovalStep[]
+}
+
+model Expense {
+  id               String   @id @default(uuid())
+  employeeId       String
+  employee         User     @relation(fields: [employeeId], references: [id])
+  companyId        String
+  company          Company  @relation(fields: [companyId], references: [id])
+  amount           Float
+  currency         String
+  convertedAmount  Float?
+  category         String
+  description      String?
+  date             DateTime @default(now())
+  status           String   @default("pending") // pending, approved, rejected
+  currentStep      Int      @default(0)
+  receiptUrl       String?
+  approvalSteps    ApprovalStep[]
+}
+
+model ApprovalRule {
+  id                  String   @id @default(uuid())
+  companyId           String
+  company             Company  @relation(fields: [companyId], references: [id])
+  name                String
+  ruleType            String   // sequential, percentage, specific, hybrid
+  percentageThreshold Float?
+  specificApproverId  String?
+}
+
+model ApprovalStep {
+  id         String   @id @default(uuid())
+  expenseId  String
+  expense    Expense  @relation(fields: [expenseId], references: [id])
+  approverId String
+  approver   User     @relation(fields: [approverId], references: [id])
+  stepOrder  Int
+  decision   String   @default("pending") // pending, approved, rejected
+  comment    String?
+  decidedAt  DateTime?
+}
