@@ -37,6 +37,9 @@ router.post('/signup', async (req, res) => {
 
     res.json({ token, user: { ...user, password: undefined } })
   } catch (err) {
+    if (err.code === 'P2002') {
+      return res.status(400).json({ error: 'User with this email already exists' })
+    }
     res.status(400).json({ error: err.message })
   }
 })

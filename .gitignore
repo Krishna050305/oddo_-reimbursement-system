@@ -1,0 +1,8 @@
+node_modules/
+.env
+.DS_Store
+dist/
+*.log
+server/push_logs.txt
+server/prisma-val.txt
+server/push.txt
