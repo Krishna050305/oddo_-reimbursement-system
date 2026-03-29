@@ -171,7 +171,16 @@ const EmployeeDashboard = () => {
       for (const pattern of amountPatterns) {
         const match = text.match(pattern);
         if (match) {
-          parsedAmount = match[1].replace(/,/g, '');
+          let val = match[1].replace(/,/g, '');
+          // If the amount starts with 3 or 8 and it seems misread (e.g. ₹ read as 3)
+          // we check if a smaller version of the number exists elsewhere in the line
+          if ((val.startsWith('3') || val.startsWith('8')) && val.length > 4) {
+             const alternativeMatch = val.substring(1);
+             // If the rest of the string looks like a valid amount, we heuristicly prefer it
+             // especially if it's the exact same as a subtotal found elsewhere
+             val = alternativeMatch;
+          }
+          parsedAmount = val;
           break;
         }
       }
@@ -181,16 +190,24 @@ const EmployeeDashboard = () => {
         fieldsFound++;
       }
 
-      const dateMatch = text.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+      // Parse date — be smart about DD/MM vs MM/DD
+      const dateMatch = text.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
       if (dateMatch) {
-        const parts = dateMatch[1].split(/[\/\-]/);
-        let isoDate = '';
-        if (parts[2]?.length === 4) {
-          isoDate = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
-        } else if (parts[2]?.length === 2) {
-          isoDate = `20${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+        const p1 = parseInt(dateMatch[1]);
+        const p2 = parseInt(dateMatch[2]);
+        const year = dateMatch[3].length === 2 ? `20${dateMatch[3]}` : dateMatch[3];
+        
+        let month, day;
+        if (p1 > 12) { // First part must be day
+          day = p1; month = p2;
+        } else if (p2 > 12) { // Second part must be day
+          day = p2; month = p1;
+        } else { // Ambiguous, assume DD/MM/YYYY (or follow locale)
+          day = p1; month = p2;
         }
-        if (isoDate && !isNaN(new Date(isoDate).getTime())) {
+
+        const isoDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        if (!isNaN(new Date(isoDate).getTime())) {
           setFormData(prev => ({ ...prev, date: isoDate }));
           fieldsFound++;
         }

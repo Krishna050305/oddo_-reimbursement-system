@@ -20,6 +20,11 @@ router.post('/submit', async (req, res) => {
       include: { manager: true }
     })
     
+    if (!user) {
+      console.error(`Submit expense error: User ${req.user.userId} not found in database`)
+      return res.status(404).json({ error: 'User not found. Please log in again.' })
+    }
+    
     // Create the expense
     const expense = await prisma.expense.create({
       data: {
@@ -48,7 +53,7 @@ router.post('/submit', async (req, res) => {
     res.status(201).json({ message: 'Expense submitted successfully', expense })
   } catch (err) {
     console.error('Submit expense error:', err)
-    res.status(500).json({ error: 'Failed to submit expense' })
+    res.status(500).json({ error: `Failed to submit expense: ${err.message}` })
   }
 })
 
