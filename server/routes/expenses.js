@@ -40,15 +40,9 @@ router.post('/submit', async (req, res) => {
         data: {
           expenseId: expense.id,
           approverId: user.managerId,
-          stepOrder: 1
+          stepOrder: 0
         }
       })
-    } else {
-      // If no manager or manager is not approver, we could auto-approve or leave pending for admin.
-      // Assuming pending status for simplicity or fallback.
-      if (req.user.role === 'admin') {
-         // Auto approve if an admin submits their own? We can just leave it as pending to test workflows.
-      }
     }
 
     res.status(201).json({ message: 'Expense submitted successfully', expense })
@@ -63,7 +57,14 @@ router.get('/my', async (req, res) => {
   try {
     const expenses = await prisma.expense.findMany({
       where: { employeeId: req.user.userId },
-      include: { approvalSteps: true },
+      include: {
+        approvalSteps: {
+          include: {
+            approver: { select: { name: true, email: true, role: true } }
+          },
+          orderBy: { stepOrder: 'asc' }
+        }
+      },
       orderBy: { date: 'desc' }
     })
     res.json(expenses)
@@ -74,6 +75,7 @@ router.get('/my', async (req, res) => {
 })
 
 // GET /pending-approvals → approval steps where approverId = logged in user and decision = pending
+// Only show steps whose stepOrder matches the expense's currentStep (multi-step awareness)
 router.get('/pending-approvals', async (req, res) => {
   try {
     const steps = await prisma.approvalStep.findMany({
@@ -86,6 +88,12 @@ router.get('/pending-approvals', async (req, res) => {
           include: {
             employee: {
               select: { name: true, email: true }
+            },
+            approvalSteps: {
+              include: {
+                approver: { select: { name: true, email: true, role: true } }
+              },
+              orderBy: { stepOrder: 'asc' }
             }
           }
         }
@@ -96,21 +104,34 @@ router.get('/pending-approvals', async (req, res) => {
         }
       }
     })
-    res.json(steps)
+
+    // Filter: only show steps where stepOrder === expense.currentStep
+    const activeSteps = steps.filter(s => s.stepOrder === s.expense.currentStep)
+
+    res.json(activeSteps)
   } catch (err) {
     console.error('Fetch pending approvals error:', err)
     res.status(500).json({ error: 'Failed to fetch pending approvals' })
   }
 })
 
-// PATCH /decide/:stepId → approve/reject step, update expense status
+// PATCH /decide/:stepId → approve/reject step with multi-step sequential logic
 router.patch('/decide/:stepId', async (req, res) => {
   const { stepId } = req.params
   const { decision, comment } = req.body // 'approved' or 'rejected'
 
   try {
     const step = await prisma.approvalStep.findUnique({
-      where: { id: stepId }
+      where: { id: stepId },
+      include: {
+        expense: {
+          include: {
+            approvalSteps: {
+              orderBy: { stepOrder: 'asc' }
+            }
+          }
+        }
+      }
     })
 
     if (!step) {
@@ -118,6 +139,9 @@ router.patch('/decide/:stepId', async (req, res) => {
     }
     if (step.approverId !== req.user.userId) {
       return res.status(403).json({ error: 'Not authorized to decide this step' })
+    }
+    if (step.decision !== 'pending') {
+      return res.status(400).json({ error: 'This step has already been decided' })
     }
 
     // Update the step
@@ -130,24 +154,90 @@ router.patch('/decide/:stepId', async (req, res) => {
       }
     })
 
-    // Update the parent expense based on decision
-    // In a multi-step workflow we would check if next step exists. Here we simplify.
-    let expenseStatus = 'pending'
-    if (decision === 'approved') {
-       expenseStatus = 'approved'
-    } else if (decision === 'rejected') {
-       expenseStatus = 'rejected'
-    }
+    // Multi-step sequential logic
+    if (decision === 'rejected') {
+      // Rejected at any step → expense is immediately rejected
+      await prisma.expense.update({
+        where: { id: step.expenseId },
+        data: { status: 'rejected' }
+      })
+    } else if (decision === 'approved') {
+      // Check if there are more steps with higher stepOrder
+      const allSteps = step.expense.approvalSteps
+      const nextSteps = allSteps.filter(s => s.stepOrder > step.stepOrder)
 
-    await prisma.expense.update({
-      where: { id: step.expenseId },
-      data: { status: expenseStatus }
-    })
+      if (nextSteps.length > 0) {
+        // More steps remain — advance currentStep, keep status pending
+        const nextStep = nextSteps[0] // next in order
+        await prisma.expense.update({
+          where: { id: step.expenseId },
+          data: {
+            status: 'pending',
+            currentStep: nextStep.stepOrder
+          }
+        })
+      } else {
+        // No more steps — expense is fully approved
+        await prisma.expense.update({
+          where: { id: step.expenseId },
+          data: { status: 'approved' }
+        })
+      }
+    }
 
     res.json({ message: 'Decision recorded', step: updatedStep })
   } catch (err) {
     console.error('Decide error:', err)
     res.status(500).json({ error: 'Failed to record decision' })
+  }
+})
+
+// POST /assign-approvers → admin assigns an approval chain to an expense
+router.post('/assign-approvers', async (req, res) => {
+  const { expenseId, approverIds } = req.body
+
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' })
+  }
+
+  if (!expenseId || !approverIds || !Array.isArray(approverIds) || approverIds.length === 0) {
+    return res.status(400).json({ error: 'expenseId and approverIds[] are required' })
+  }
+
+  try {
+    // Verify expense exists and belongs to the same company
+    const expense = await prisma.expense.findUnique({ where: { id: expenseId } })
+    if (!expense) return res.status(404).json({ error: 'Expense not found' })
+    if (expense.companyId !== req.user.companyId) {
+      return res.status(403).json({ error: 'Cannot modify expenses outside your company' })
+    }
+
+    // Delete existing approval steps for this expense (reset chain)
+    await prisma.approvalStep.deleteMany({ where: { expenseId } })
+
+    // Create new steps in order
+    const steps = await Promise.all(
+      approverIds.map((approverId, index) =>
+        prisma.approvalStep.create({
+          data: {
+            expenseId,
+            approverId,
+            stepOrder: index
+          }
+        })
+      )
+    )
+
+    // Reset expense to pending at step 0
+    await prisma.expense.update({
+      where: { id: expenseId },
+      data: { status: 'pending', currentStep: 0 }
+    })
+
+    res.status(201).json({ message: 'Approval chain created', steps })
+  } catch (err) {
+    console.error('Assign approvers error:', err)
+    res.status(500).json({ error: 'Failed to assign approvers' })
   }
 })
 
@@ -164,7 +254,12 @@ router.get('/all', async (req, res) => {
       },
       include: {
         employee: { select: { name: true, email: true } },
-        approvalSteps: true
+        approvalSteps: {
+          include: {
+            approver: { select: { name: true, email: true, role: true } }
+          },
+          orderBy: { stepOrder: 'asc' }
+        }
       },
       orderBy: { date: 'desc' }
     })
@@ -186,7 +281,13 @@ router.get('/decisions', async (req, res) => {
       include: {
         expense: {
           include: {
-            employee: { select: { name: true, email: true } }
+            employee: { select: { name: true, email: true } },
+            approvalSteps: {
+              include: {
+                approver: { select: { name: true, email: true, role: true } }
+              },
+              orderBy: { stepOrder: 'asc' }
+            }
           }
         }
       },

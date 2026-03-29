@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import api from '../api/axios';
 import Tesseract from 'tesseract.js';
-import { LogOut, PlusCircle, Receipt, RefreshCcw, WalletCards, Camera, X, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
+import { LogOut, PlusCircle, Receipt, RefreshCcw, WalletCards, Camera, X, CheckCircle, AlertTriangle, Loader2, AlertCircle } from 'lucide-react';
 
 const EmployeeDashboard = () => {
   const { user, logout } = useAuth();
@@ -10,6 +10,7 @@ const EmployeeDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [submitLoading, setSubmitLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [expandedId, setExpandedId] = useState(null);
 
   const companyCurrency = user?.company?.currency || 'INR';
 
@@ -25,7 +26,7 @@ const EmployeeDashboard = () => {
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrProgress, setOcrProgress] = useState(0);
   const [ocrStatus, setOcrStatus] = useState('');
-  const [ocrBanner, setOcrBanner] = useState(null); // { type: 'success' | 'warning', message }
+  const [ocrBanner, setOcrBanner] = useState(null);
   const [receiptPreview, setReceiptPreview] = useState(null);
   const fileInputRef = useRef(null);
 
@@ -71,7 +72,6 @@ const EmployeeDashboard = () => {
       setConversionRate(res.data.rate);
     } catch (err) {
       console.error('Conversion error:', err);
-      // fallback: treat as 1:1
       setConvertedAmount(parseFloat(amount));
       setConversionRate(1);
     } finally {
@@ -108,7 +108,6 @@ const EmployeeDashboard = () => {
     setError(null);
     try {
       const submitData = { ...formData };
-      // Include convertedAmount if currency differs from company currency
       if (formData.currency !== companyCurrency && convertedAmount) {
         submitData.convertedAmount = convertedAmount;
       }
@@ -120,7 +119,7 @@ const EmployeeDashboard = () => {
       setOcrBanner(null);
       fetchExpenses();
     } catch (err) {
-      setError('Failed to submit expense. Try again.');
+      setError(err.response?.data?.error || 'Failed to submit expense. Try again.');
     } finally {
       setSubmitLoading(false);
     }
@@ -144,7 +143,6 @@ const EmployeeDashboard = () => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Show preview
     setReceiptPreview(URL.createObjectURL(file));
     setOcrLoading(true);
     setOcrProgress(0);
@@ -162,12 +160,7 @@ const EmployeeDashboard = () => {
       const text = result.data.text;
       let fieldsFound = 0;
 
-      // Parse amount — prioritize "Grand Total" over "Subtotal"
-      // Tesseract often misreads ₹ as a digit (e.g., "3"), so we use a flexible pattern
-      // that captures the number after the keyword, skipping any non-digit garbage between keyword and amount
       let parsedAmount = null;
-
-      // Try patterns in priority order: grand total first, then total, then subtotal/amount
       const amountPatterns = [
         /grand\s*total[:\s]*[^0-9]*(\d[\d,]*\.\d{2})/i,
         /(?:^|\n)[^\n]*\btotal\b(?!\s*\()[:\s]*[^0-9]*(\d[\d,]*\.\d{2})/i,
@@ -188,13 +181,11 @@ const EmployeeDashboard = () => {
         fieldsFound++;
       }
 
-      // Parse date
       const dateMatch = text.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
       if (dateMatch) {
         const parts = dateMatch[1].split(/[\/\-]/);
         let isoDate = '';
         if (parts[2]?.length === 4) {
-          // DD/MM/YYYY or MM/DD/YYYY — assume DD/MM/YYYY
           isoDate = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
         } else if (parts[2]?.length === 2) {
           isoDate = `20${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
@@ -205,7 +196,6 @@ const EmployeeDashboard = () => {
         }
       }
 
-      // Parse description (first meaningful line)
       const lines = text.split('\n').filter(l => l.trim().length > 2);
       const description = lines[0]?.trim() || '';
       if (description) {
@@ -213,7 +203,6 @@ const EmployeeDashboard = () => {
         fieldsFound++;
       }
 
-      // Parse category
       const category = categorizeFromText(text);
       setFormData(prev => ({ ...prev, category }));
       if (category !== 'Other') fieldsFound++;
@@ -231,7 +220,6 @@ const EmployeeDashboard = () => {
     } finally {
       setOcrLoading(false);
       setOcrProgress(0);
-      // Reset file input so the same file can be selected again
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
@@ -243,7 +231,6 @@ const EmployeeDashboard = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans">
-      {/* Navbar segment */}
       <nav className="bg-white shadow-sm border-b border-slate-200 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16 items-center">
@@ -258,10 +245,10 @@ const EmployeeDashboard = () => {
             </div>
             <div className="flex items-center gap-4">
               <div className="text-sm font-medium text-slate-600">
-                <span className="px-3 py-1 bg-slate-100 rounded-full">{user?.role}</span>
+                <span className="px-3 py-1 bg-slate-100 rounded-full capitalize">{user?.role}</span>
               </div>
               <button onClick={logout} className="secondary-btn text-sm py-1.5 px-3">
-                <LogOut size={16} /> Logout
+                <LogOut size={16} /> <span className="hidden sm:inline">Logout</span>
               </button>
             </div>
           </div>
@@ -357,7 +344,6 @@ const EmployeeDashboard = () => {
                     </select>
                     <input type="number" step="0.01" name="amount" value={formData.amount} onChange={handleChange} className="form-input flex-1" placeholder="0.00" required />
                   </div>
-                  {/* Currency Conversion Display */}
                   {formData.currency !== companyCurrency && formData.amount && (
                     <div className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-500">
                       {conversionLoading ? (
@@ -395,7 +381,11 @@ const EmployeeDashboard = () => {
                   <textarea name="description" value={formData.description} onChange={handleChange} className="mt-1 form-input w-full resize-none h-24" placeholder="Brief description of the expense..." required></textarea>
                 </div>
 
-                {error && <div className="text-sm text-red-600 bg-red-50 p-2 rounded-lg">{error}</div>}
+                {error && (
+                  <div className="text-sm text-red-600 bg-red-50 p-3 rounded-lg flex items-center gap-2">
+                    <AlertCircle size={16} className="shrink-0" /> {error}
+                  </div>
+                )}
 
                 {/* Grand Total Summary */}
                 {formData.amount && (
@@ -429,7 +419,7 @@ const EmployeeDashboard = () => {
             </div>
           </div>
 
-          {/* Past Expenses Table */}
+          {/* Past Expenses List */}
           <div className="lg:col-span-2">
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
               <div className="p-6 border-b border-slate-200 flex justify-between items-center bg-slate-50/50">
@@ -439,7 +429,8 @@ const EmployeeDashboard = () => {
                 </button>
               </div>
 
-              <div className="overflow-x-auto">
+              {/* Mobile-friendly card view for small screens, table for large */}
+              <div className="hidden md:block overflow-x-auto">
                 <table className="min-w-full divide-y divide-slate-200">
                   <thead className="bg-slate-50">
                     <tr>
@@ -462,42 +453,133 @@ const EmployeeDashboard = () => {
                       <tr>
                         <td colSpan="5" className="px-6 py-12 text-center">
                            <Receipt className="mx-auto text-slate-300 mb-3" size={32} />
-                           <p className="text-slate-500 font-medium">No expenses submitted yet.</p>
+                           <p className="text-slate-500 font-medium">No expenses submitted yet</p>
                            <p className="text-sm text-slate-400 mt-1">Submit your first expense using the form.</p>
                         </td>
                       </tr>
                     ) : (
                       expenses.map((exp) => (
-                        <tr key={exp.id} className="hover:bg-slate-50/50 transition-colors group">
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
-                            {new Date(exp.date).toLocaleDateString()}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900">
-                            {exp.category}
-                          </td>
-                          <td className="px-6 py-4 text-sm text-slate-500 max-w-xs truncate" title={exp.description}>
-                            {exp.description}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-right">
-                            <span className="font-bold text-slate-900">
-                              {exp.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {exp.currency}
-                            </span>
-                            {exp.convertedAmount && exp.currency !== companyCurrency && (
-                              <span className="block text-xs text-slate-400 mt-0.5">
-                                ≈ {exp.convertedAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {companyCurrency}
+                        <React.Fragment key={exp.id}>
+                          <tr
+                            className="hover:bg-slate-50/50 transition-colors group cursor-pointer"
+                            onClick={() => setExpandedId(expandedId === exp.id ? null : exp.id)}
+                          >
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
+                              {new Date(exp.date).toLocaleDateString()}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900">
+                              {exp.category}
+                            </td>
+                            <td className="px-6 py-4 text-sm text-slate-500 max-w-xs truncate" title={exp.description}>
+                              {exp.description}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-right">
+                              <span className="font-bold text-slate-900">
+                                {exp.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {exp.currency}
                               </span>
-                            )}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-center">
-                            <span className={`badge badge-${exp.status}`}>
-                              {exp.status}
-                            </span>
-                          </td>
-                        </tr>
+                              {exp.convertedAmount && exp.currency !== companyCurrency && (
+                                <span className="block text-xs text-slate-400 mt-0.5">
+                                  ≈ {exp.convertedAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {companyCurrency}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-center">
+                              <span className={`badge badge-${exp.status}`}>
+                                {exp.status}
+                              </span>
+                            </td>
+                          </tr>
+                          {/* Expanded row: Approval Timeline */}
+                          {expandedId === exp.id && exp.approvalSteps && exp.approvalSteps.length > 0 && (
+                            <tr>
+                              <td colSpan="5" className="px-6 py-3 bg-slate-50/50 border-t-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider mr-2">Approval Flow:</span>
+                                  {exp.approvalSteps.map((step, idx) => {
+                                    const isActive = step.stepOrder === exp.currentStep && step.decision === 'pending';
+                                    return (
+                                      <React.Fragment key={step.id}>
+                                        <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border
+                                          ${step.decision === 'approved' ? 'bg-green-50 text-green-700 border-green-200' : 
+                                            step.decision === 'rejected' ? 'bg-red-50 text-red-700 border-red-200' : 
+                                            isActive ? 'bg-yellow-50 text-yellow-700 border-yellow-200 ring-1 ring-yellow-300' :
+                                            'bg-slate-50 text-slate-400 border-slate-200'}
+                                        `}>
+                                          <span className="font-semibold">
+                                            {step.decision === 'approved' ? '✓' : step.decision === 'rejected' ? '✗' : isActive ? '⏳' : '○'}
+                                          </span>
+                                          <span>{step.approver?.name || 'Approver'}</span>
+                                          {step.comment && (
+                                            <span className="text-[10px] text-slate-400" title={step.comment}>💬</span>
+                                          )}
+                                        </div>
+                                        {idx < exp.approvalSteps.length - 1 && (
+                                          <span className={`text-xs ${step.decision === 'approved' ? 'text-green-400' : 'text-slate-300'}`}>→</span>
+                                        )}
+                                      </React.Fragment>
+                                    );
+                                  })}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
                       ))
                     )}
                   </tbody>
                 </table>
+              </div>
+
+              {/* Mobile card view */}
+              <div className="md:hidden divide-y divide-slate-100">
+                {loading && expenses.length === 0 ? (
+                  <div className="p-8 text-center text-slate-400">
+                    <RefreshCcw className="animate-spin mx-auto mb-2" size={24} />
+                    Loading your expenses...
+                  </div>
+                ) : expenses.length === 0 ? (
+                  <div className="p-8 text-center">
+                    <Receipt className="mx-auto text-slate-300 mb-3" size={32} />
+                    <p className="text-slate-500 font-medium">No expenses submitted yet</p>
+                    <p className="text-sm text-slate-400 mt-1">Submit your first expense using the form.</p>
+                  </div>
+                ) : expenses.map(exp => (
+                  <div key={exp.id} className="p-4" onClick={() => setExpandedId(expandedId === exp.id ? null : exp.id)}>
+                    <div className="flex justify-between items-start mb-2">
+                      <div>
+                        <p className="font-medium text-slate-900">{exp.category}</p>
+                        <p className="text-xs text-slate-400">{new Date(exp.date).toLocaleDateString()}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-bold text-slate-900">{exp.amount.toLocaleString()} {exp.currency}</p>
+                        <span className={`badge badge-${exp.status} mt-1`}>{exp.status}</span>
+                      </div>
+                    </div>
+                    <p className="text-sm text-slate-500 truncate">{exp.description}</p>
+                    {/* Mobile timeline */}
+                    {expandedId === exp.id && exp.approvalSteps && exp.approvalSteps.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-1 flex-wrap">
+                        {exp.approvalSteps.map((step, idx) => {
+                          const isActive = step.stepOrder === exp.currentStep && step.decision === 'pending';
+                          return (
+                            <React.Fragment key={step.id}>
+                              <div className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium border
+                                ${step.decision === 'approved' ? 'bg-green-50 text-green-700 border-green-200' : 
+                                  step.decision === 'rejected' ? 'bg-red-50 text-red-700 border-red-200' : 
+                                  isActive ? 'bg-yellow-50 text-yellow-700 border-yellow-200' :
+                                  'bg-slate-50 text-slate-400 border-slate-200'}
+                              `}>
+                                {step.decision === 'approved' ? '✓' : step.decision === 'rejected' ? '✗' : isActive ? '⏳' : '○'}
+                                {' '}{step.approver?.name || 'Approver'}
+                              </div>
+                              {idx < exp.approvalSteps.length - 1 && <span className="text-xs text-slate-300">→</span>}
+                            </React.Fragment>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
           </div>

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import api from '../api/axios';
-import { LogOut, CheckCircle, XCircle, Clock, WalletCards, RefreshCcw, User } from 'lucide-react';
+import { LogOut, CheckCircle, XCircle, Clock, WalletCards, RefreshCcw, User, AlertCircle } from 'lucide-react';
 
 const ManagerDashboard = () => {
   const { user, logout } = useAuth();
@@ -9,6 +9,7 @@ const ManagerDashboard = () => {
   const [pending, setPending] = useState([]);
   const [decisions, setDecisions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [actionError, setActionError] = useState(null);
 
   // For comments
   const [comments, setComments] = useState({});
@@ -38,21 +39,29 @@ const ManagerDashboard = () => {
   };
 
   const handleDecide = async (stepId, decision) => {
+    setActionError(null);
     try {
       await api.patch(`/expenses/decide/${stepId}`, {
         decision,
         comment: comments[stepId] || ''
       });
-      // Refresh
       fetchData();
     } catch (err) {
       console.error('Failed to decide', err);
-      alert('Failed to record decision. Please try again.');
+      setActionError(err.response?.data?.error || 'Failed to record decision. Please try again.');
+      setTimeout(() => setActionError(null), 4000);
     }
   };
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans">
+      {/* Error Toast */}
+      {actionError && (
+        <div className="fixed top-4 right-4 z-[100] px-4 py-3 rounded-xl shadow-lg text-sm font-medium flex items-center gap-2 bg-red-600 text-white animate-in slide-in-from-top-2 duration-300">
+          <AlertCircle size={16} /> {actionError}
+        </div>
+      )}
+
       <nav className="bg-white shadow-sm border-b border-slate-200 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16 items-center">
@@ -68,11 +77,11 @@ const ManagerDashboard = () => {
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2 text-sm font-medium text-slate-600">
                 <User size={16} />
-                <span>{user?.name}</span>
-                <span className="px-3 py-1 bg-brand-100 text-brand-800 rounded-full ml-1">{user?.role}</span>
+                <span className="hidden sm:inline">{user?.name}</span>
+                <span className="px-3 py-1 bg-brand-100 text-brand-800 rounded-full ml-1 text-xs font-bold uppercase">{user?.role}</span>
               </div>
               <button onClick={logout} className="secondary-btn text-sm py-1.5 px-3">
-                <LogOut size={16} /> Logout
+                <LogOut size={16} /> <span className="hidden sm:inline">Logout</span>
               </button>
             </div>
           </div>
@@ -80,7 +89,7 @@ const ManagerDashboard = () => {
       </nav>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="flex justify-between items-end mb-6 border-b border-slate-200 pb-4">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end mb-6 border-b border-slate-200 pb-4 gap-3">
            <div>
               <h1 className="text-2xl font-bold text-slate-900">Approvals Overview</h1>
               <p className="text-slate-500 mt-1">Manage team expense requests efficiently.</p>
@@ -93,6 +102,7 @@ const ManagerDashboard = () => {
         <section className="mb-12">
           <h2 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
             <Clock className="text-yellow-500" size={20} /> Pending Action
+            {pending.length > 0 && <span className="ml-1 bg-yellow-100 text-yellow-700 text-xs px-2 py-0.5 rounded-full font-bold">{pending.length}</span>}
           </h2>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -106,8 +116,8 @@ const ManagerDashboard = () => {
                  <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-green-50 mb-4 text-green-500">
                    <CheckCircle size={32} />
                  </div>
-                 <p className="text-slate-500 font-medium">You're all caught up!</p>
-                 <p className="text-sm text-slate-400 mt-1">No pending expense requests awaiting your approval.</p>
+                 <p className="text-slate-600 font-semibold text-lg">No pending approvals — you're all caught up! ✓</p>
+                 <p className="text-sm text-slate-400 mt-1">New expense requests will appear here when submitted by team members.</p>
                </div>
             ) : (
               pending.map(step => (
@@ -138,6 +148,14 @@ const ManagerDashboard = () => {
                     <div className="bg-slate-50 rounded-lg p-3 text-sm text-slate-600 mb-4 border border-slate-100 line-clamp-2" title={step.expense.description}>
                       "{step.expense.description || "No description provided"}"
                     </div>
+
+                    {/* Approval Timeline */}
+                    {step.expense.approvalSteps && step.expense.approvalSteps.length > 1 && (
+                      <div className="mb-4">
+                        <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Approval Flow</p>
+                        <ApprovalTimeline steps={step.expense.approvalSteps} currentStep={step.expense.currentStep} />
+                      </div>
+                    )}
                   </div>
 
                   <div className="mt-auto space-y-3 pt-4 border-t border-slate-100">
@@ -182,15 +200,17 @@ const ManagerDashboard = () => {
                 <tbody className="bg-white divide-y divide-slate-100">
                   {decisions.length === 0 ? (
                     <tr>
-                      <td colSpan="5" className="px-6 py-8 text-center text-slate-400">
-                         No history to display
+                      <td colSpan="5" className="px-6 py-12 text-center">
+                        <Clock className="mx-auto mb-2 text-slate-300" size={32} />
+                        <p className="text-slate-500 font-medium">No decisions recorded yet</p>
+                        <p className="text-sm text-slate-400 mt-1">Your approval history will show up here.</p>
                       </td>
                     </tr>
                   ) : (
                     decisions.map(step => (
-                      <tr key={step.id}>
+                      <tr key={step.id} className="hover:bg-slate-50/50 transition-colors">
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
-                          {new Date(step.decidedAt).toLocaleDateString()}
+                          {step.decidedAt ? new Date(step.decidedAt).toLocaleDateString() : '—'}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900">
                           {step.expense.employee.name}
@@ -211,7 +231,7 @@ const ManagerDashboard = () => {
                            </span>
                         </td>
                         <td className="px-6 py-4 text-sm text-slate-500 max-w-xs truncate" title={step.comment}>
-                          {step.comment || "-"}
+                          {step.comment || "—"}
                         </td>
                       </tr>
                     ))
@@ -222,6 +242,37 @@ const ManagerDashboard = () => {
           </div>
         </section>
       </main>
+    </div>
+  );
+};
+
+// Approval Timeline Component (shared between cards and tables)
+const ApprovalTimeline = ({ steps, currentStep }) => {
+  if (!steps || steps.length === 0) return null;
+
+  return (
+    <div className="flex items-center gap-1 flex-wrap">
+      {steps.map((step, idx) => {
+        const isActive = step.stepOrder === currentStep && step.decision === 'pending';
+        return (
+          <React.Fragment key={step.id}>
+            <div className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium border
+              ${step.decision === 'approved' ? 'bg-green-50 text-green-700 border-green-200' : 
+                step.decision === 'rejected' ? 'bg-red-50 text-red-700 border-red-200' : 
+                isActive ? 'bg-yellow-50 text-yellow-700 border-yellow-200 ring-1 ring-yellow-300' :
+                'bg-slate-50 text-slate-400 border-slate-200'}
+            `}>
+              <span className="font-semibold">
+                {step.decision === 'approved' ? '✓' : step.decision === 'rejected' ? '✗' : isActive ? '⏳' : '○'}
+              </span>
+              <span>{step.approver?.name || 'Approver'}</span>
+            </div>
+            {idx < steps.length - 1 && (
+              <span className={`text-xs ${step.decision === 'approved' ? 'text-green-400' : 'text-slate-300'}`}>→</span>
+            )}
+          </React.Fragment>
+        );
+      })}
     </div>
   );
 };
